@@ -1,0 +1,93 @@
+// Single-Stage Pipeline Register with Valid/Ready Handshake
+// 
+// This module implements a single-stage pipeline register that:
+// - Uses valid/ready handshake protocol
+// - Handles backpressure correctly (no data loss or duplication)
+// - Is fully synthesizable
+// - Resets to a clean empty state
+
+module pipeline_register #(
+    parameter int DATA_WIDTH = 32
+) (
+    input  logic                    clk,
+    input  logic                    rst_n,      // Active-low asynchronous reset
+    
+    // Input interface
+    input  logic                    in_valid,
+    output logic                    in_ready,
+    input  logic [DATA_WIDTH-1:0]   in_data,
+    
+    // Output interface
+    output logic                    out_valid,
+    input  logic                    out_ready,
+    output logic [DATA_WIDTH-1:0]   out_data
+);
+
+    // Internal storage
+    logic [DATA_WIDTH-1:0] data_reg;
+    logic                  valid_reg;
+    
+    // Handshake signals
+    logic input_fire;   // Input transaction occurs
+    logic output_fire;  // Output transaction occurs
+    
+    assign input_fire  = in_valid && in_ready;
+    assign output_fire = out_valid && out_ready;
+    
+    // Ready signal logic:
+    // We're ready to accept new data when:
+    // 1. The register is empty (valid_reg == 0), OR
+    // 2. The register is being drained (output_fire == 1)
+    assign in_ready = !valid_reg || output_fire;
+    
+    // Output valid signal
+    assign out_valid = valid_reg;
+    assign out_data  = data_reg;
+    
+    // Register logic
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            valid_reg <= 1'b0;
+            data_reg  <= '0;
+        end else begin
+            // Handle valid bit
+            case ({input_fire, output_fire})
+                2'b00: valid_reg <= valid_reg;           // No change
+                2'b01: valid_reg <= 1'b0;                // Drained, becomes empty
+                2'b10: valid_reg <= 1'b1;                // New data loaded
+                2'b11: valid_reg <= 1'b1;                // Simultaneous: stays valid with new data
+            endcase
+            
+            // Capture input data when input transaction occurs
+            if (input_fire) begin
+                data_reg <= in_data;
+            end
+        end
+    end
+    
+    // Assertions for verification (synthesizable in most tools, can be disabled for synthesis)
+    `ifdef FORMAL
+        // Property: No data loss
+        // If valid and not ready, data must remain stable
+        property p_data_stable;
+            @(posedge clk) disable iff (!rst_n)
+            (out_valid && !out_ready) |=> ($stable(out_data) && out_valid);
+        endproperty
+        assert property (p_data_stable);
+        
+        // Property: Valid remains high until accepted
+        property p_valid_sticky;
+            @(posedge clk) disable iff (!rst_n)
+            (out_valid && !out_ready) |=> out_valid;
+        endproperty
+        assert property (p_valid_sticky);
+        
+        // Property: No spurious valid
+        property p_no_spurious_valid;
+            @(posedge clk) disable iff (!rst_n)
+            (!valid_reg && !input_fire) |=> !out_valid;
+        endproperty
+        assert property (p_no_spurious_valid);
+    `endif
+
+endmodule
